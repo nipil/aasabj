@@ -1,5 +1,5 @@
 /*********************************************************************************************************************************/
-#include <Stepper.h>
+#include <AccelStepper.h>
 #include <SevSeg.h>
 
 /*********************************************************************************************************************************/
@@ -42,7 +42,7 @@ const unsigned long STEPS_PER_LOOP = 1;
 
 // physics (motor)
 const unsigned short STEPPER_STEPS_PER_REV = /* natural */ 32 * 64 /* gear reduction */; // for 28BYJ-48
-const byte STEPPER_ROTATION_PER_MINUTE = 15; // for 28BYJ-48
+const byte MAX_STEPPER_ROTATION_PER_MINUTE = 15; // for 28BYJ-48
 
 // electronics
 const unsigned long DEBOUNCE_TIME_MS = 200;
@@ -385,7 +385,8 @@ MultiFunctionButton buttonA(PIN_BUTTON_A);
 MultiFunctionButton buttonB(PIN_BUTTON_B);
 DebouncedSwitch resetLimit(PIN_RESET_LIMIT_SWITCH);
 
-Stepper screwStepper(STEPPER_STEPS_PER_REV,
+// stepper
+AccelStepper screwStepper(AccelStepper::FULL4WIRE,
 		PIN_STEPPER_DRIVER[PIN_STEPPER_DRIVER_ORDER[0]],
 		PIN_STEPPER_DRIVER[PIN_STEPPER_DRIVER_ORDER[1]],
 		PIN_STEPPER_DRIVER[PIN_STEPPER_DRIVER_ORDER[2]],
@@ -394,7 +395,9 @@ Stepper screwStepper(STEPPER_STEPS_PER_REV,
 // physics
 unsigned long stepsKerf = DEFAULT_KERF_STEPS;
 unsigned long stepsFinger = DEFAULT_FINGER_STEPS;
-unsigned long remainingSteps = 0;
+
+const unsigned long MAX_STEPS_PER_SECOND = STEPPER_STEPS_PER_REV * MAX_STEPPER_ROTATION_PER_MINUTE / 60;
+
 DirectionFlag directionConfig(PIN_CONFIG_DIRECTION);
 
 // logic
@@ -415,7 +418,8 @@ void setup()
 	directionConfig.setup();
 
 	// stepper
-	screwStepper.setSpeed(STEPPER_ROTATION_PER_MINUTE);
+	screwStepper.setMaxSpeed(MAX_STEPS_PER_SECOND);
+	screwStepper.setAcceleration(MAX_STEPS_PER_SECOND); // accelerate fast
 
 	// input switches
 	buttonA.setup();
@@ -472,6 +476,16 @@ void handleInteractiveInputs()
 		buttonA.resetPreviousChangeMs();
 		buttonB.resetPreviousChangeMs();
 		msm.handleDoubleLongPress();
+
+		switch(msm.getState())
+		{
+			case MyStateMachine::MSM_RESET_POSITION:
+				screwStepper.setSpeed(-directionConfig.getDirection() * MAX_STEPS_PER_SECOND);
+				break;
+
+			default:
+				break;
+		}
 	}
 
 	// long press A : set kerf steps
@@ -497,11 +511,12 @@ void handleInteractiveInputs()
 	{
 		DPRINTLN("release A");
 		msm.handleReleaseA();
+
 		if (msm.getState() == MyStateMachine::MSM_MOVE_KERF)
 		{
 			DPRINT("prepare to move kerf steps total ");
-			remainingSteps = stepsKerf;
-			DPRINTLN(remainingSteps, DEC);
+			screwStepper.move(+directionConfig.getDirection() * stepsKerf);
+			DPRINTLN(stepsKerf, DEC);
 		}
 	}
 
@@ -510,11 +525,12 @@ void handleInteractiveInputs()
 	{
 		DPRINTLN("release B");
 		msm.handleReleaseB();
+
 		if (msm.getState() == MyStateMachine::MSM_MOVE_FINGER)
 		{
 			DPRINT("prepare to move finger steps total ");
-			remainingSteps = stepsFinger;
-			DPRINTLN(remainingSteps, DEC);
+			screwStepper.move(+directionConfig.getDirection() * stepsFinger);
+			DPRINTLN(stepsFinger, DEC);
 		}
 	}
 
@@ -656,47 +672,21 @@ void handleDisplay()
 /*********************************************************************************************************************************/
 void handleMotors()
 {
-	long stepperSteps, loopSteps;
-
 	switch(msm.getState())
 	{
 		case MyStateMachine::MSM_MOVE_KERF:
-			loopSteps = min(STEPS_PER_LOOP, remainingSteps);
-			stepperSteps = +directionConfig.getDirection() * loopSteps;
-			if (remainingSteps > 0)
-			{
-				DPRINT("move kerf step FORWARD ");
-				DPRINTLN(stepperSteps, DEC);
-				screwStepper.step(stepperSteps);
-				remainingSteps = remainingSteps - loopSteps;
-				if (remainingSteps == 0)
-				{
-					msm.setState(MyStateMachine::MSM_IDLE);
-				}
-			}
-			break;
-
 		case MyStateMachine::MSM_MOVE_FINGER:
-			if (remainingSteps > 0)
+			DPRINT("move kerf/finger step FORWARD ");
+			screwStepper.run();
+			if (screwStepper.distanceToGo() == 0)
 			{
-				loopSteps = min(STEPS_PER_LOOP, remainingSteps);
-				stepperSteps = +directionConfig.getDirection() * loopSteps;
-				DPRINT("move finger step FORWARD ");
-				DPRINTLN(stepperSteps, DEC);
-				screwStepper.step(stepperSteps);
-				remainingSteps = remainingSteps - loopSteps;
-				if (remainingSteps == 0)
-				{
-					msm.setState(MyStateMachine::MSM_IDLE);
-				}
+				msm.setState(MyStateMachine::MSM_IDLE);
 			}
 			break;
 
 		case MyStateMachine::MSM_RESET_POSITION:
-			stepperSteps = -directionConfig.getDirection() * STEPS_PER_LOOP;
-			DPRINT("move reset step REVERSE ");
-			DPRINTLN(stepperSteps, DEC);
-			screwStepper.step(stepperSteps);
+			DPRINT("turn BACKWARDS for reset");
+			screwStepper.runSpeed();
 			break;
 
 		default:
