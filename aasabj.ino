@@ -35,14 +35,30 @@ const byte PIN_STEPPER_DRIVER[] = { 10, 11, 12, 13 };
 const byte PIN_STEPPER_DRIVER_ORDER[] = { 0, 2, 1, 3 }; // 28BYJ-48
 
 /*********************************************************************************************************************************/
-// physics (preference)
-const unsigned long DEFAULT_KERF_STEPS = 100;
-const unsigned long DEFAULT_FINGER_STEPS = 2000;
-const unsigned long STEPS_PER_LOOP = 1;
-
 // physics (motor)
 const unsigned short STEPPER_STEPS_PER_REV = /* natural */ 32 * 64 /* gear reduction */; // for 28BYJ-48
 const byte MAX_STEPPER_ROTATION_PER_MINUTE = 15; // for 28BYJ-48
+
+// physics (blade)
+// i prefer to use the number of steps so you can adjust it easily on the fly with integers
+//
+// you can derive the "approximate" amount of steps from your blade kerf width
+// and the thread pitch from your advance screw, like this :
+//
+// Kerf steps = STEPPER_STEPS_PER_REV * blade_width (mm) / screw_thread_pitch (mm)
+//
+// For example :
+//   my blade kerf is 2.8mm
+//   i use an M8 screw with a 1.25 mm pitch
+//   my prototype motor is a 28BYJ-48 with 2048 steps per rev
+// So my default kerf steps is 2048 * 2.8 / 1.25 = 4587,52 ~ 4588 steps
+//
+// Depending on your real-life kerf size you will need to make test and adjust to get a perfect fit
+// This allows you to know the number of steps for different fits as well (with or without glue, for example)
+const unsigned long DEFAULT_KERF_STEPS = 4588;
+
+// physics (preference)
+const unsigned long DEFAULT_KERF_PER_FINGER = 4;
 
 // electronics
 const unsigned long DEBOUNCE_TIME_MS = 200;
@@ -394,7 +410,7 @@ AccelStepper screwStepper(AccelStepper::FULL4WIRE,
 
 // physics
 unsigned long stepsKerf = DEFAULT_KERF_STEPS;
-unsigned long stepsFinger = DEFAULT_FINGER_STEPS;
+unsigned long kerfPerFinger = DEFAULT_KERF_PER_FINGER;
 
 const unsigned long MAX_STEPS_PER_SECOND = STEPPER_STEPS_PER_REV * MAX_STEPPER_ROTATION_PER_MINUTE / 60;
 
@@ -480,7 +496,10 @@ void handleInteractiveInputs()
 		switch(msm.getState())
 		{
 			case MyStateMachine::MSM_RESET_POSITION:
-				screwStepper.setSpeed(-directionConfig.getDirection() * MAX_STEPS_PER_SECOND);
+				DPRINT("double long press MSM_RESET_POSITION ");
+				// following statement needs a cast so that computation does not always evaluate to unsigned ...
+				screwStepper.setSpeed(-directionConfig.getDirection() * (signed) MAX_STEPS_PER_SECOND);
+				DPRINTLN(screwStepper.speed(),DEC);
 				break;
 
 			default:
@@ -528,9 +547,10 @@ void handleInteractiveInputs()
 
 		if (msm.getState() == MyStateMachine::MSM_MOVE_FINGER)
 		{
-			DPRINT("prepare to move finger steps total ");
-			screwStepper.move(+directionConfig.getDirection() * stepsFinger);
-			DPRINTLN(stepsFinger, DEC);
+			DPRINT("prepare to move to next finger");
+			screwStepper.move(+directionConfig.getDirection() * kerfPerFinger * stepsKerf);
+			DPRINTLN(stepsKerf, DEC);
+			DPRINTLN(kerfPerFinger, DEC);
 		}
 	}
 
@@ -547,7 +567,7 @@ void handleInteractiveInputs()
 				break;
 
 			case MyStateMachine::MSM_SET_FINGER:
-				stepsFinger++;
+				kerfPerFinger++;
 				break;
 
 			default:
@@ -564,11 +584,13 @@ void handleInteractiveInputs()
 		switch(msm.getState())
 		{
 			case MyStateMachine::MSM_SET_KERF:
-				stepsKerf--;
+				if (stepsKerf > 1)
+					stepsKerf--;
 				break;
 
 			case MyStateMachine::MSM_SET_FINGER:
-				stepsFinger--;
+				if (kerfPerFinger > 1)
+					kerfPerFinger--;
 				break;
 
 			default:
@@ -658,7 +680,7 @@ void handleDisplay()
 			break;
 
 		case MyStateMachine::MSM_SET_FINGER:
-			sevseg.setNumber(stepsFinger);
+			sevseg.setNumber(kerfPerFinger);
 			blinkDisplay(sevseg, blink_slow);
 			break;
 
@@ -677,7 +699,10 @@ void handleMotors()
 		case MyStateMachine::MSM_MOVE_KERF:
 		case MyStateMachine::MSM_MOVE_FINGER:
 			DPRINT("move kerf/finger step FORWARD ");
+			DPRINT(screwStepper.speed(), DEC);
+			DPRINT(" ");
 			screwStepper.run();
+			DPRINTLN(screwStepper.speed(), DEC);
 			if (screwStepper.distanceToGo() == 0)
 			{
 				msm.setState(MyStateMachine::MSM_IDLE);
@@ -685,8 +710,11 @@ void handleMotors()
 			break;
 
 		case MyStateMachine::MSM_RESET_POSITION:
-			DPRINT("turn BACKWARDS for reset");
+			DPRINT("turn BACKWARDS for reset ");
+			DPRINT(screwStepper.speed(), DEC);
+			DPRINT(" ");
 			screwStepper.runSpeed();
+			DPRINTLN(screwStepper.speed(), DEC);
 			break;
 
 		default:
